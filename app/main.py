@@ -215,7 +215,7 @@ async def health_check():
 
 @app.post("/ingest", response_model=IngestResponse)
 @limiter.limit("5/minute")
-async def ingest_endpoint(http_request: Request, request: IngestRequest):
+async def ingest_endpoint(request: Request, body: IngestRequest):
     """
     Ingest a codebase into the vector store.
 
@@ -224,15 +224,15 @@ async def ingest_endpoint(http_request: Request, request: IngestRequest):
     """
     request_id = uuid.uuid4().hex[:8]
     logger.info(
-        f"[{request_id}] Starting ingestion of: {request.directory_path}",
-        extra={"request_id": request_id, "directory": request.directory_path},
+        f"[{request_id}] Starting ingestion of: {body.directory_path}",
+        extra={"request_id": request_id, "directory": body.directory_path},
     )
 
     try:
         start_time = time.time()
         result = ingest_codebase(
-            request.directory_path,
-            clear_existing=request.clear_existing
+            body.directory_path,
+            clear_existing=body.clear_existing
         )
         duration_ms = round((time.time() - start_time) * 1000, 2)
 
@@ -272,7 +272,7 @@ async def ingest_endpoint(http_request: Request, request: IngestRequest):
 
 @app.post("/query", response_model=QueryResponse)
 @limiter.limit("10/minute")
-async def query_endpoint(http_request: Request, request: QueryRequest):
+async def query_endpoint(request: Request, body: QueryRequest):
     """
     Query the codebase.
 
@@ -281,8 +281,8 @@ async def query_endpoint(http_request: Request, request: QueryRequest):
     """
     request_id = uuid.uuid4().hex[:8]
     logger.info(
-        f"[{request_id}] Query: {request.question[:120]}",
-        extra={"request_id": request_id, "question_len": len(request.question), "top_k": request.top_k},
+        f"[{request_id}] Query: {body.question[:120]}",
+        extra={"request_id": request_id, "question_len": len(body.question), "top_k": body.top_k},
     )
 
     # Check if we have any documents
@@ -296,7 +296,7 @@ async def query_endpoint(http_request: Request, request: QueryRequest):
     try:
         # Retrieve relevant chunks
         start_time = time.time()
-        results = vector_store.query(request.question, top_k=request.top_k)
+        results = vector_store.query(body.question, top_k=body.top_k)
         retrieval_time = (time.time() - start_time) * 1000
 
         if results:
@@ -331,7 +331,7 @@ async def query_endpoint(http_request: Request, request: QueryRequest):
 
         # Generate response
         start_time = time.time()
-        answer = generate_response(request.question, context)
+        answer = generate_response(body.question, context)
         llm_time = (time.time() - start_time) * 1000
 
         if llm_time > SLOW_QUERY_THRESHOLD_MS:
