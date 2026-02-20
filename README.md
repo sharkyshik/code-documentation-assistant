@@ -172,6 +172,27 @@ I use Python's AST module to extract functions and classes as chunks. Why not si
 
 A production system might use Tree-sitter for multi-language support, but for Python-only, AST is clean and stdlib.
 
+### No Reranking
+
+Reranking is a common RAG pattern where a second-pass model (typically a cross-encoder like Cohere Rerank or BGE Reranker) rescores an initial set of retrieved candidates before passing them to the LLM. I chose not to include it here.
+
+**Why it's not needed for this use case:**
+
+1. **AST chunks are already semantically tight**: Each chunk is a complete function or class — not an arbitrary 512-token window that might start mid-sentence. A query like "how does the embeddings module work?" maps cleanly to `embeddings.py` chunks. The first-pass retrieval is already high precision.
+
+2. **Small corpus, high signal**: Typical codebases indexed here span hundreds to low thousands of chunks. Reranking pays off when you retrieve a large noisy candidate set (top 50–100) and need to find the best 5. With a small, well-structured corpus, the initial cosine similarity search is already accurate enough.
+
+3. **Code queries are keyword-rich**: Natural language questions about code ("where is X initialized?", "what does function Y return?") contain the exact identifiers that appear in the source. This reduces the semantic gap between query and document that rerankers are designed to bridge.
+
+4. **The LLM reranks implicitly**: With only `top_k` (default: 5) chunks in context, the LLM naturally weighs relevance when synthesizing an answer. It will ignore a tangentially related chunk if a more relevant one is present. This is cheap and requires no extra model.
+
+5. **Local-only constraint**: Effective hosted rerankers (Cohere Rerank) send data to external APIs, violating the privacy-first design. Local cross-encoders (BGE, ms-marco) add another model to download, manage, and run — significant overhead for marginal gain at this scale.
+
+**When you'd want reranking:**
+- Multi-repo indexing with tens of thousands of chunks
+- Queries that are vague or use natural language rather than code identifiers
+- You've already tuned chunking and retrieval and are chasing the last few percent of accuracy
+
 ### No LangChain
 
 I deliberately avoided LangChain despite its popularity. Reasons:
