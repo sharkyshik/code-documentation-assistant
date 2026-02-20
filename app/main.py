@@ -6,10 +6,13 @@ import time
 from contextlib import asynccontextmanager
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-from .config import TOP_K, EMBEDDING_MODEL, LLM_MODEL
+from .config import TOP_K, EMBEDDING_MODEL, LLM_MODEL, MAX_QUESTION_LENGTH, MAX_TOP_K
 from .ingestion import ingest_codebase, get_ingestion_stats
 from .retriever import get_vector_store, format_context
 from .llm import generate_response
@@ -54,6 +57,9 @@ async def lifespan(app: FastAPI):
     # Shutdown (nothing to clean up)
 
 
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Code Documentation Assistant",
@@ -61,6 +67,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Add CORS middleware
 app.add_middleware(
@@ -91,8 +100,8 @@ class IngestResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     """Request model for query endpoint."""
-    question: str = Field(..., description="Question about the codebase")
-    top_k: int = Field(TOP_K, description="Number of chunks to retrieve")
+    question: str = Field(..., min_length=1, max_length=MAX_QUESTION_LENGTH, description="Question about the codebase")
+    top_k: int = Field(TOP_K, ge=1, le=MAX_TOP_K, description="Number of chunks to retrieve")
 
 
 class Source(BaseModel):
@@ -147,7 +156,8 @@ async def health_check():
 
 
 @app.post("/ingest", response_model=IngestResponse)
-async def ingest_endpoint(request: IngestRequest):
+@limiter.limit("5/minute")
+async def ingest_endpoint(http_request: Request, request: IngestRequest):
     """
     Ingest a codebase into the vector store.
 
@@ -186,7 +196,8 @@ async def ingest_endpoint(request: IngestRequest):
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query_endpoint(request: QueryRequest):
+@limiter.limit("10/minute")
+async def query_endpoint(http_request: Request, request: QueryRequest):
     """
     Query the codebase.
 

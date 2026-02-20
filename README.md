@@ -184,6 +184,50 @@ I deliberately avoided LangChain despite its popularity. Reasons:
 
 The tradeoff: If you need to rapidly prototype with many different LLMs/vector stores, LangChain's abstractions help. For a focused tool like this, they just get in the way.
 
+## Guardrails
+
+The following guardrails are applied to protect the system from misuse and resource exhaustion. All limits are configurable via environment variables.
+
+### Input Validation
+
+Applied by Pydantic on every request — invalid inputs are rejected with HTTP 422 before reaching any business logic.
+
+| Field | Rule | Default |
+|-------|------|---------|
+| `question` | 1–1000 characters | `MAX_QUESTION_LENGTH=1000` |
+| `top_k` | Integer between 1 and 20 | `MAX_TOP_K=20` |
+
+### Rate Limiting
+
+Enforced per IP address using [slowapi](https://github.com/laurentS/slowapi).
+
+| Endpoint | Limit |
+|----------|-------|
+| `POST /query` | 10 requests / minute |
+| `POST /ingest` | 5 requests / minute |
+
+Exceeding the limit returns HTTP 429. Limits are enforced in-memory and reset on server restart.
+
+### Directory Path Security
+
+Applied before any file is read during ingestion:
+
+- **Path resolution**: The provided path is resolved to its absolute canonical form (symlinks expanded). This prevents traversal attacks like `../../etc`.
+- **System directory blocklist**: Ingestion is refused if the resolved path starts with a known system directory:
+  - Unix: `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/usr`, `/bin`, `/sbin`
+  - Windows: `C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`
+
+### Resource Limits
+
+Prevent runaway ingestion jobs from exhausting memory or disk I/O.
+
+| Limit | Default | Env var |
+|-------|---------|---------|
+| Max Python files per ingestion job | 500 | `MAX_FILES_PER_INGEST` |
+| Max file size per file | 1 MB (1,048,576 bytes) | `MAX_FILE_SIZE_BYTES` |
+
+Files exceeding the size limit are skipped with a warning log rather than failing the entire ingestion job.
+
 ## Tradeoffs and Limitations
 
 ### What This Does Well

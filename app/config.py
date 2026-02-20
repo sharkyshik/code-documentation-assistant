@@ -21,6 +21,19 @@ TOP_K = int(os.getenv("TOP_K", "5"))
 # Supported file extensions
 SUPPORTED_EXTENSIONS = [".py"]
 
+# Guardrails
+MAX_QUESTION_LENGTH = int(os.getenv("MAX_QUESTION_LENGTH", "1000"))
+MAX_TOP_K = int(os.getenv("MAX_TOP_K", "20"))
+MAX_FILES_PER_INGEST = int(os.getenv("MAX_FILES_PER_INGEST", "500"))
+MAX_FILE_SIZE_BYTES = int(os.getenv("MAX_FILE_SIZE_BYTES", str(1 * 1024 * 1024)))  # 1MB
+
+BLOCKED_INGEST_PATHS = [
+    # Unix system directories
+    "/etc", "/proc", "/sys", "/dev", "/root", "/usr", "/bin", "/sbin",
+    # Windows system directories
+    "c:/windows", "c:/program files", "c:/program files (x86)",
+]
+
 # LLM prompt template
 SYSTEM_PROMPT = """You are a code documentation assistant. Answer ONLY based on the provided context.
 If the answer is not found in the context, say "I don't know based on the provided code."
