@@ -559,11 +559,11 @@ If I were deploying this at scale, here's the evolution path:
 - Implement queue-based ingestion (Celery + Redis)
 
 ### Cost Estimates (AWS)
-- Small: t3.medium + EBS = ~$50/month
-- Medium: p3.2xlarge (GPU) = ~$1000/month
-- Large: EKS cluster + managed services = $3000+/month
+- Small: t3.medium + EBS = ~Rs5000/month
+- Medium: p3.2xlarge (GPU) = ~Rs100000/month
+- Large: EKS cluster + managed services = Rs300000+/month
 
-The beauty of starting local-only is you can run this on a $0 laptop until you actually need scale.
+The beauty of starting local-only is you can run this on a Rs.0 laptop until you actually need scale.
 
 ## What I'd Improve With More Time
 
