@@ -249,6 +249,102 @@ Prevent runaway ingestion jobs from exhausting memory or disk I/O.
 
 Files exceeding the size limit are skipped with a warning log rather than failing the entire ingestion job.
 
+## Known Hallucination Scenarios
+
+The following scenarios are structural — they arise from how the pipeline is built, not from model quality. Each entry includes a test prompt, what the system is likely to return, and the root cause in the code.
+
+---
+
+### 1. No Relevance Threshold — Forced Retrieval on Unrelated Questions
+
+**Test prompt:**
+```json
+{"question": "How does user authentication work in this codebase?"}
+```
+
+**What happens:** ChromaDB always returns exactly `top_k` results regardless of how dissimilar they are to the query (`retriever.py:129` — no distance cutoff). If the codebase has no authentication code, the retriever returns the closest chunks it has (e.g., the `config.py` chunk or an unrelated function). The LLM then tries to answer from those chunks and may fabricate an auth flow by over-interpreting unrelated code — or correctly say "I don't know", depending on how well the model follows the system prompt.
+
+**Root cause:** `VectorStore.query()` passes no distance filter to ChromaDB. Every query returns results.
+
+**Mitigation:** Set a maximum distance threshold (e.g., cosine distance > 0.5 = not relevant). Chunks above the threshold should be dropped before passing context to the LLM.
+
+---
+
+### 2. Module-Level Code Not Indexed
+
+**Test prompt:**
+```json
+{"question": "What file extensions does the system support?"}
+```
+
+**What happens:** The answer lives in `config.py` as `SUPPORTED_EXTENSIONS = [".py"]` — a module-level constant, not inside any function or class. The AST chunker in `chunking.py:70` only extracts `FunctionDef`, `AsyncFunctionDef`, and `ClassDef` nodes. Module-level assignments are only captured via the whole-file fallback, which only activates when **no** functions or classes exist in the file (`chunking.py:88`). Since `config.py` has no functions, it does get the fallback chunk — but any file that mixes functions with important module-level constants (global vars, instantiation code) will have those constants silently excluded from the index.
+
+For example, `main.py` has `app = FastAPI(...)` and `limiter = Limiter(...)` at module level. Those lines are not in any chunk. A question like "how is the FastAPI app configured?" will miss the CORS middleware setup and lifespan handler instantiation.
+
+**Root cause:** `chunking.py:88` — the fallback only fires when the chunk list is empty. Files with any functions/classes skip module-level code entirely.
+
+**Mitigation:** Always add a module-level chunk regardless of whether functions/classes were found. Or extract `ast.Assign` / `ast.AugAssign` nodes for top-level constants.
+
+---
+
+### 3. Cross-File Reasoning Collapses Into One File
+
+**Test prompt:**
+```json
+{"question": "How does a query flow from the API endpoint to the LLM response?"}
+```
+
+**What happens:** This question spans `main.py → retriever.py → llm.py`. The embedding for "query flow from API endpoint to LLM" most closely matches the `query_endpoint` function in `main.py`. With `top_k=5`, all five returned chunks may come from `main.py`, leaving out the retrieval and generation steps entirely. The LLM then describes only the endpoint layer and either stops there or invents the rest of the flow from its training data.
+
+**Root cause:** There is no per-file diversity enforcement in retrieval. ChromaDB returns the globally top-k closest chunks with no constraint on source file spread.
+
+**Mitigation:** Implement MMR (Maximal Marginal Relevance) or file-level de-duplication so retrieved chunks span multiple files. Alternatively, raise `top_k` for architecture questions — though this risks noise.
+
+---
+
+### 4. Training Data Bleed on Generic Questions
+
+**Test prompt:**
+```json
+{"question": "What is a vector database?"}
+```
+
+**What happens:** The system prompt in `config.py:25` instructs the LLM to "Answer ONLY based on the provided context." However, general conceptual questions retrieve tangentially related chunks (e.g., the `VectorStore` class) and then the LLM answers with a mix of the retrieved code and its pre-trained knowledge about vector databases. The answer will be accurate but is no longer grounded in the indexed codebase — it's a blended response that violates the RAG contract.
+
+**Root cause:** LLMs routinely ignore system prompt scope constraints when they have strong training knowledge on the topic. The instruction is a soft guardrail, not a hard one.
+
+**Mitigation:** This is difficult to fully prevent with prompt engineering alone. Adding a distance threshold (see scenario 1) reduces it by refusing to answer when no close match exists.
+
+---
+
+### 5. Stale Index After Code Changes
+
+**Test prompt** (after modifying `app/llm.py` without re-ingesting):
+```json
+{"question": "What is the LLM request timeout?"}
+```
+
+**What happens:** If `llm.py` was modified (e.g., timeout changed from `120` to `30`) but `/ingest` was not re-run, the vector store still holds the old embedding and content. The LLM answers `120 seconds` from the stale chunk. There is no file hash tracking or modification-time check in `ingestion.py`.
+
+**Root cause:** `ingestion.py` has no mechanism to detect changed files. The only way to refresh is `clear_existing=true` on a full re-ingest.
+
+**Mitigation:** Track file modification times or content hashes at ingest time. On subsequent ingests, skip unchanged files and re-embed only changed or new ones.
+
+---
+
+### 6. Duplicate Class and Method Chunks Cause Contradictory Context
+
+**Test prompt:**
+```json
+{"question": "What does the add method in Calculator do?"}
+```
+
+**What happens:** The AST chunker (`chunking.py:70`) walks the entire tree with `ast.walk()`, which visits all nested nodes. For a class `Calculator` with method `add`, both the `ClassDef` node (containing the full class body including `add`) and the `FunctionDef` node for `add` are extracted as separate chunks. Both end up in the vector store. A query about `add` may retrieve both. The LLM now sees the method body twice — once in isolation and once embedded inside the class chunk. While typically harmless, this can cause the LLM to over-count the method's importance or generate redundant references.
+
+**Root cause:** `chunking.py:70` uses `ast.walk()` which recurses into class bodies, so inner methods are visited as top-level `FunctionDef` nodes.
+
+**Mitigation:** Use `ast.iter_child_nodes()` instead of `ast.walk()` at the top level to avoid recursing into class bodies, or de-duplicate by tracking parent node membership.
+
 ## Tradeoffs and Limitations
 
 ### What This Does Well
