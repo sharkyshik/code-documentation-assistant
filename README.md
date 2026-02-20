@@ -460,10 +460,3 @@ The beauty of starting local-only is you can run this on a $0 laptop until you a
 - Add code execution sandbox for "run this function" queries
 - IDE plugin (VS Code extension)
 
-## License
-
-MIT
-
----
-
-Built because I got tired of grep-ing through unfamiliar codebases. Sometimes you just want to ask "where does this thing get initialized?" and get a straight answer.
