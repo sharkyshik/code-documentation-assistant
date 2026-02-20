@@ -34,6 +34,11 @@ BLOCKED_INGEST_PATHS = [
     "c:/windows", "c:/program files", "c:/program files (x86)",
 ]
 
+# Observability
+SLOW_QUERY_THRESHOLD_MS = int(os.getenv("SLOW_QUERY_THRESHOLD_MS", "10000"))  # 10 seconds
+LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(10 * 1024 * 1024)))        # 10 MB
+LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "3"))
+
 # LLM prompt template
 SYSTEM_PROMPT = """You are a code documentation assistant. Answer ONLY based on the provided context.
 If the answer is not found in the context, say "I don't know based on the provided code."

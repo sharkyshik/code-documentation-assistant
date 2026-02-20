@@ -345,6 +345,134 @@ For example, `main.py` has `app = FastAPI(...)` and `limiter = Limiter(...)` at 
 
 **Mitigation:** Use `ast.iter_child_nodes()` instead of `ast.walk()` at the top level to avoid recursing into class bodies, or de-duplicate by tracking parent node membership.
 
+## Observability
+
+Every component of the pipeline emits structured logs so you can understand what the system is doing, diagnose bad answers, and spot performance regressions.
+
+### Log Output
+
+Logs go to two destinations simultaneously:
+
+| Destination | Format | Purpose |
+|-------------|--------|---------|
+| **Console** (stdout) | Human-readable plain text | Development and live monitoring |
+| **`queries.log`** | Newline-delimited JSON | Machine-readable, grep-able, parseable |
+
+The file handler uses `RotatingFileHandler` — the log is capped at **10 MB** and **3 backup files** are kept (`queries.log.1`, `queries.log.2`, `queries.log.3`). Configurable via env vars.
+
+Each JSON log line has a fixed envelope plus any extra structured fields:
+```json
+{
+  "ts": "2026-02-20T14:32:01.123456+00:00",
+  "level": "INFO",
+  "logger": "app.main",
+  "msg": "[a3f9c1b2] Query: How does ingestion work?",
+  "request_id": "a3f9c1b2",
+  "question_len": 28,
+  "top_k": 5
+}
+```
+
+### Request IDs
+
+Every `/query` and `/ingest` call is assigned a short 8-character hex `request_id` at the start of the handler. All log lines for that request are prefixed with `[<request_id>]`, making it easy to correlate retrieval, LLM, and error lines for a single call:
+
+```
+[a3f9c1b2] Query: How does ingestion work?
+[a3f9c1b2] Retrieved 5 chunks in 42.3ms — distances min=0.121 avg=0.198 max=0.341
+[a3f9c1b2] LLM response in 3842.1ms
+```
+
+### HTTP Request Logging
+
+A middleware layer logs every HTTP request automatically — no per-endpoint boilerplate needed:
+
+```
+GET  /health        -> 200  (12.4ms)
+POST /ingest        -> 200  (4821.0ms)
+POST /query         -> 200  (3901.2ms)
+POST /query         -> 429  (0.8ms)   ← rate limited
+```
+
+In `queries.log` these lines also carry structured fields `method`, `path`, `status_code`, and `duration_ms`.
+
+### Retrieval Distance Logging
+
+After every vector search the min, avg, and max cosine distances of the returned chunks are logged:
+
+```
+[a3f9c1b2] Retrieved 5 chunks in 42.3ms — distances min=0.121 avg=0.198 max=0.341
+```
+
+**How to read the distances** (ChromaDB uses cosine distance, where 0 = identical):
+
+| Distance range | Meaning |
+|----------------|---------|
+| 0.0 – 0.2 | Strong match — high retrieval confidence |
+| 0.2 – 0.4 | Reasonable match |
+| 0.4 – 0.6 | Weak match — answer may be unreliable |
+| > 0.6 | Poor match — high hallucination risk (see Known Hallucination Scenarios) |
+
+The `source_files` field in the JSON log also lists which files were hit, making it easy to spot when all chunks come from one file (cross-file reasoning failure).
+
+### Slow Query Warnings
+
+If the LLM takes longer than `SLOW_QUERY_THRESHOLD_MS` (default: 10 seconds) to respond, a `WARNING` is emitted:
+
+```
+[a3f9c1b2] Slow LLM response: 14231ms (threshold: 10000ms)
+```
+
+This typically means the model is cold (first request after Ollama startup) or the context is unusually large. Adjust the threshold via env var.
+
+### Exception Stack Traces
+
+All unhandled exceptions in endpoint handlers use `logger.exception()`, which automatically appends the full stack trace to the log entry. In `queries.log` the trace appears under the `"exc"` key:
+
+```json
+{
+  "ts": "...",
+  "level": "ERROR",
+  "msg": "[a3f9c1b2] Query failed",
+  "request_id": "a3f9c1b2",
+  "exc": "Traceback (most recent call last):\n  File ..."
+}
+```
+
+### Observability Configuration
+
+All thresholds are configurable via `.env`:
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `SLOW_QUERY_THRESHOLD_MS` | `10000` | Warn if LLM response exceeds this (ms) |
+| `LOG_MAX_BYTES` | `10485760` | Max size of `queries.log` before rotation (bytes) |
+| `LOG_BACKUP_COUNT` | `3` | Number of rotated log files to retain |
+
+### Useful One-liners
+
+Parse `queries.log` with standard tools:
+
+```bash
+# Show all queries and their LLM latencies
+grep '"msg"' queries.log | python -c "
+import sys, json
+for line in sys.stdin:
+    r = json.loads(line)
+    if 'llm_time_ms' in r:
+        print(r['ts'], r['msg'], r.get('llm_time_ms'))
+"
+
+# Find all slow queries
+grep '"level": "WARNING"' queries.log
+
+# Find all requests that errored
+grep '"level": "ERROR"' queries.log
+
+# Show retrieval distance stats for a specific request_id
+grep 'a3f9c1b2' queries.log
+```
+
 ## Tradeoffs and Limitations
 
 ### What This Does Well
